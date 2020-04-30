@@ -1,20 +1,25 @@
 open Mirage
 
-let main = foreign "Unikernel.Main" (console @-> job)
-
-let platform =
-    match get_mode () with
-        | `Xen -> "xen"
-        | _ -> "unix"
+let main =
+    let packages = [
+            package "mirage-vnetif";
+            package "mirage-net-unix";
+            package "mirage-net";
+            package "mirage-unix";
+            package "mirage-clock-unix";
+            package "mirage-types";
+            package "mirage-stack";
+            package "mirage-protocols";
+            package "mirage-clock";
+            package "arp";
+            package "arp-mirage";
+            package "tcpip";
+            package ~sublibs:["stack-direct"; "ipv4"; "tcp"; "udp"; "icmpv4"] "tcpip" ] in
+    foreign
+      ~packages
+      "Unikernel.Main" (console @-> random @-> job)
 
 let () =
-    add_to_ocamlfind_libraries [ 
-        "mirage-vnetif" ; 
-        "mirage-net-" ^ platform ; 
-        "mirage-" ^ platform; 
-        "mirage-clock-" ^ platform;
-        "tcpip.stack-direct" ; 
-        "mirage-types" ];
   register "unikernel" [
-    main $ default_console
+    main $ default_console $ default_random
   ]

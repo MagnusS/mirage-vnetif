@@ -23,16 +23,18 @@ let blue fmt   = Printf.sprintf ("\027[36m"^^fmt^^"\027[m")
 let netmask = Ipaddr.V4.of_string_exn "255.255.255.0" 
 let gw = Ipaddr.V4.of_string_exn "192.168.56.1" 
 
-module Main (C: Mirage_types_lwt.CONSOLE) = struct
+module Main (C: Mirage_console.S)(R : Mirage_random.S) = struct
 
   module Stack = struct
     module B = Basic_backend.Make
     module V = Vnetif.Make(B)
-    module E = Ethif.Make(V)
-    module I = Ipv4.Make(E)(Clock)(OS.Time)
-    module U = Udp.Make(I)
-    module T = Tcp.Flow.Make(I)(OS.Time)(Clock)(Random)
-    module S = Tcpip_stack_direct.Make(C)(OS.Time)(Random)(V)(E)(I)(U)(T)
+    module E = Ethernet.Make(V)
+    module A = Arp.Make(E)(OS.Time)
+    module Ip = Static_ipv4.Make(R)(Mclock)(E)(A)
+    module Icmp = Icmpv4.Make(Ip)
+    module U = Udp.Make(Ip)(R)
+    module T = Tcp.Flow.Make(Ip)(OS.Time)(Mclock)(R)
+    module S = Tcpip_stack_direct.Make(OS.Time)(R)(V)(E)(A)(Ip)(Icmp)(U)(T)
     include S
   end
 
@@ -43,13 +45,15 @@ module Main (C: Mirage_types_lwt.CONSOLE) = struct
         | `Ok t -> return t 
 
   let accept c flow =
-    let ip, port = Stack.TCPV4.get_dest flow in
-    C.log_s c (green "Accepted connection from %s:%d%!" (Ipaddr.V4.to_string ip) port) >>= fun () ->
+    let ip, port = Stack.TCPV4.dst flow in
+    Logs.info (fun f -> f "Accepted connection from %s:%d%!" (Ipaddr.V4.to_string ip) port);
     Stack.TCPV4.read flow >>= (function
-        | `Ok b -> C.log_s c (green "Got %s%!" (Cstruct.to_string b))
-        | `Eof | `Error _ -> C.log_s c (green "Error while reading%!")) >>= fun () ->
-    Stack.TCPV4.close flow >>= fun () ->
-    C.log_s c (green "Connection closed%!")
+        | Ok (`Data b) -> Logs.info (fun f -> f "Got %s%!" (Cstruct.to_string b)); Lwt.return_unit
+        | Ok `Eof -> Logs.info (fun f -> f "Remote side closed the connection%!"); Lwt.return_unit
+        | Error e -> Logs.warn (fun f -> f "Error while reading: %a%!" Stack.TCPV4.pp_error e);
+                             Stack.TCPV4.close flow >>= fun () ->
+                                     Logs.info (fun f -> f "Connection closed%!");
+                                     Lwt.return_unit)
 
   let create_stack c backend ip =
     or_error "backend" Stack.V.connect backend >>= fun netif ->
